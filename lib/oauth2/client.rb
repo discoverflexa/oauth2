@@ -35,7 +35,7 @@ module OAuth2
       @options = {:authorize_url    => '/oauth/authorize',
                   :token_url        => '/oauth/token',
                   :token_method     => :post,
-                  :auth_scheme      => :request_body,
+                  :auth_scheme      => :basic_auth,
                   :connection_opts  => {},
                   :connection_build => block,
                   :max_redirects    => 5,
@@ -53,15 +53,16 @@ module OAuth2
 
     # The Faraday connection object
     def connection
-      @connection ||= begin
-        conn = Faraday.new(site, options[:connection_opts])
-        if options[:connection_build]
-          conn.build do |b|
-            options[:connection_build].call(b)
+      @connection ||=
+        Faraday.new(site, options[:connection_opts]) do |builder|
+          oauth_debug_logging(builder)
+          if options[:connection_build]
+            options[:connection_build].call(builder)
+          else
+            builder.request :url_encoded             # form-encode POST params
+            builder.adapter Faraday.default_adapter  # make requests with Net::HTTP
           end
         end
-        conn
-      end
     end
 
     # The authorize endpoint URL of the OAuth2 provider
@@ -92,10 +93,7 @@ module OAuth2
     # @option opts [Symbol] :parse @see Response::initialize
     # @yield [req] The Faraday request
     def request(verb, url, opts = {}) # rubocop:disable CyclomaticComplexity, MethodLength, Metrics/AbcSize
-      connection.response :logger, ::Logger.new($stdout) if ENV['OAUTH_DEBUG'] == 'true'
-
       url = connection.build_url(url, opts[:params]).to_s
-
       response = connection.run_request(verb, url, opts[:body], opts[:headers]) do |req|
         yield(req) if block_given?
       end
@@ -130,9 +128,9 @@ module OAuth2
     # @param [Hash] params a Hash of params for the token endpoint
     # @param [Hash] access token options, to pass to the AccessToken object
     # @param [Class] class of access token for easier subclassing OAuth2::AccessToken
-    # @return [AccessToken] the initalized AccessToken
+    # @return [AccessToken] the initialized AccessToken
     def get_token(params, access_token_opts = {}, access_token_class = AccessToken) # rubocop:disable Metrics/AbcSize, Metrics/MethodLength
-      params = Authenticator.new(id, secret, options[:auth_scheme]).apply(params)
+      params = authenticator.apply(params)
       opts = {:raise_errors => options[:raise_errors], :parse => params.delete(:parse)}
       headers = params.delete(:headers) || {}
       if options[:token_method] == :post
@@ -148,7 +146,7 @@ module OAuth2
         error = Error.new(response)
         raise(error)
       end
-      access_token_class.from_hash(self, response.parsed.merge(access_token_opts))
+      build_access_token(response, access_token_opts, access_token_class)
     end
 
     # The Authorization Code strategy
@@ -205,6 +203,28 @@ module OAuth2
       else
         {}
       end
+    end
+
+  private
+
+    # Returns the authenticator object
+    #
+    # @return [Authenticator] the initialized Authenticator
+    def authenticator
+      Authenticator.new(id, secret, options[:auth_scheme])
+    end
+
+    # Builds the access token from the response of the HTTP call
+    #
+    # @return [AccessToken] the initialized AccessToken
+    def build_access_token(response, access_token_opts, access_token_class)
+      access_token_class.from_hash(self, response.parsed.merge(access_token_opts)).tap do |access_token|
+        access_token.response = response if access_token.respond_to?(:response=)
+      end
+    end
+
+    def oauth_debug_logging(builder)
+      builder.response :logger, ::Logger.new($stdout), :bodies => true if ENV['OAUTH_DEBUG'] == 'true'
     end
   end
 end

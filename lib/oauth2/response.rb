@@ -11,15 +11,12 @@ module OAuth2
     # Procs that, when called, will parse a response body according
     # to the specified format.
     @@parsers = {
-      :json  => lambda { |body| MultiJson.load(body) rescue body }, # rubocop:disable RescueModifier
       :query => lambda { |body| Rack::Utils.parse_query(body) },
       :text  => lambda { |body| body },
     }
 
     # Content type assignments for various potential HTTP content types.
     @@content_types = {
-      'application/json' => :json,
-      'text/javascript' => :json,
       'application/x-www-form-urlencoded' => :query,
       'text/plain' => :text,
     }
@@ -63,12 +60,24 @@ module OAuth2
       response.body || ''
     end
 
-    # The parsed response body.
-    #   Will attempt to parse application/x-www-form-urlencoded and
-    #   application/json Content-Type response bodies
+    # The {#response} {#body} as parsed by {#parser}.
+    #
+    # @return [Object] As returned by {#parser} if it is #call-able.
+    # @return [nil] If the {#parser} is not #call-able.
     def parsed
-      return nil unless @@parsers.key?(parser)
-      @parsed ||= @@parsers[parser].call(body)
+      return @parsed if defined?(@parsed)
+
+      @parsed =
+        if parser.respond_to?(:call)
+          case parser.arity
+          when 0
+            parser.call
+          when 1
+            parser.call(body)
+          else
+            parser.call(body, response)
+          end
+        end
     end
 
     # Attempts to determine the content type of the response.
@@ -76,14 +85,41 @@ module OAuth2
       ((response.headers.values_at('content-type', 'Content-Type').compact.first || '').split(';').first || '').strip
     end
 
-    # Determines the parser that will be used to supply the content of #parsed
+    # Determines the parser (a Proc or other Object which responds to #call)
+    # that will be passed the {#body} (and optionall {#response}) to supply
+    # {#parsed}.
+    #
+    # The parser can be supplied as the +:parse+ option in the form of a Proc
+    # (or other Object responding to #call) or a Symbol. In the latter case,
+    # the actual parser will be looked up in {@@parsers} by the supplied Symbol.
+    #
+    # If no +:parse+ option is supplied, the lookup Symbol will be determined
+    # by looking up {#content_type} in {@@content_types}.
+    #
+    # If {#parser} is a Proc, it will be called with no arguments, just
+    # {#body}, or {#body} and {#response}, depending on the Proc's arity.
+    #
+    # @return [Proc, #call] If a parser was found.
+    # @return [nil] If no parser was found.
     def parser
-      return options[:parse].to_sym if @@parsers.key?(options[:parse])
-      @@content_types[content_type]
+      return @parser if defined?(@parser)
+
+      @parser =
+        if options[:parse].respond_to?(:call)
+          options[:parse]
+        elsif options[:parse]
+          @@parsers[options[:parse].to_sym]
+        end
+
+      @parser ||= @@parsers[@@content_types[content_type]]
     end
   end
 end
 
-OAuth2::Response.register_parser(:xml, ['text/xml', 'application/rss+xml', 'application/rdf+xml', 'application/atom+xml']) do |body|
+OAuth2::Response.register_parser(:xml, ['text/xml', 'application/rss+xml', 'application/rdf+xml', 'application/atom+xml', 'application/xml']) do |body|
   MultiXml.parse(body) rescue body # rubocop:disable RescueModifier
+end
+
+OAuth2::Response.register_parser(:json, ['application/json', 'text/javascript', 'application/hal+json', 'application/vnd.collection+json']) do |body|
+  MultiJson.load(body) rescue body # rubocop:disable RescueModifier
 end

@@ -1,24 +1,18 @@
-if RUBY_VERSION >= '1.9'
-  require 'simplecov'
-  require 'coveralls'
+require 'simplecov'
+require 'coveralls'
+require 'spec_helpers/stubbed_env'
 
-  SimpleCov.formatters = [SimpleCov::Formatter::HTMLFormatter, Coveralls::SimpleCov::Formatter]
+SimpleCov.formatters = SimpleCov::Formatter::MultiFormatter[
+  SimpleCov::Formatter::HTMLFormatter,
+  Coveralls::SimpleCov::Formatter
+]
 
-  SimpleCov.start do
-    add_filter '/spec'
-    minimum_coverage(95.33)
-  end
+SimpleCov.start do
+  add_filter '/spec'
+  minimum_coverage(95.33)
 end
 
-require 'oauth2'
 require 'addressable/uri'
-require 'rspec'
-
-RSpec.configure do |config|
-  config.expect_with :rspec do |c|
-    c.syntax = :expect
-  end
-end
 
 Faraday.default_adapter = :test
 
